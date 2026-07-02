@@ -1,0 +1,15 @@
+COMMERCIAL INVOICE
+Invoice No: INV-2026-001
+Invoice Date: 2026-06-04
+Seller: ABC Export SARL, Tunis, Tunisia
+Buyer: Prague Import s.r.o., Prague, Czech Republic
+Incoterms: DAP Prague
+Currency: EUR
+
+Line 1: Electronic parts, Qty 100 pcs, Unit price 12.50 EUR, Total 1250 EUR
+HS Code: 8542.39
+Country of Origin: Tunisia
+Net Weight: 20 kg
+Gross Weight: 24 kg
+
+Total invoice value: 1250 EUR
