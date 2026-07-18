@@ -1654,15 +1654,19 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
             key="hs_object_upload",
         )
         if hs_upload is not None:
-            detected_text_for_hs = extract_text_from_uploaded_file(hs_upload, lang)
+            detected_text_for_hs, hs_warning = extract_text_from_upload(hs_upload)
+            if hs_warning:
+                st.info(hs_warning)
             if detected_text_for_hs:
                 st.text_area("Extracted text used for HS detection", detected_text_for_hs, height=140, key="hs_upload_extracted_text")
             else:
-                st.warning("No readable text was extracted. This prototype needs OCR text or a typed description. For direct visual object recognition, connect a vision AI model later.")
+                st.warning("No readable text was extracted. This prototype needs OCR text or a typed description. Direct visual object recognition requires a vision AI model, which can be connected in a later production version.")
     elif hs_detect_method == "Take a picture":
         hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
         if hs_photo is not None:
-            detected_text_for_hs = extract_text_from_uploaded_file(hs_photo, lang)
+            detected_text_for_hs, hs_warning = extract_text_from_image(hs_photo.getvalue())
+            if hs_warning:
+                st.info(hs_warning)
             if detected_text_for_hs:
                 st.text_area("Text detected from photo", detected_text_for_hs, height=140, key="hs_photo_extracted_text")
             else:
@@ -1673,13 +1677,12 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
         if hs_detect_method != "Use description above" and detected_text_for_hs:
             source_for_detection = detected_text_for_hs
         candidate = extract_product_candidate_from_text(source_for_detection)
-        st.session_state["hs_product_text"] = candidate or source_for_detection
-        st.session_state["hs_last_candidate"] = candidate
-        st.rerun()
+        st.session_state["hs_last_candidate"] = candidate or source_for_detection
+        st.session_state["hs_active_product_text"] = candidate or source_for_detection
 
-    if st.session_state.get("hs_last_candidate"):
-        st.success(f"Detected object/product candidate: {st.session_state['hs_last_candidate']}")
-        product_text = st.session_state.get("hs_product_text", product_text)
+    if st.session_state.get("hs_active_product_text"):
+        product_text = st.session_state.get("hs_active_product_text", product_text)
+        st.success(f"Detected object/product candidate: {product_text}")
 
     suggestions = suggest_hs_options(product_text, tree, limit=8) if product_text.strip() else []
     if product_text.strip():
@@ -1796,7 +1799,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v25")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v26")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
