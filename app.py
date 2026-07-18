@@ -1655,7 +1655,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
 
     st.markdown("**Object/HS detection from description, document, or photo**")
-    st.caption("Note: upload/photo detection uses OCR text. A product photo without readable text needs a vision AI model; otherwise type the object name above.")
+    st.caption("Use typed description for normal HS search. Upload/photo works only when the file/photo contains readable text. Pure product-photo recognition needs a vision AI model.")
     hs_detect_method = st.radio(
         "HS input source",
         ["Use description above", "Upload image/PDF/document", "Take a picture"],
@@ -1679,6 +1679,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
             else:
                 st.warning("No readable text was extracted. This upload/photo option works only when the image/document contains readable text. For a product photo without text, type the object name above or connect a vision AI model.")
     elif hs_detect_method == "Take a picture":
+        st.info("For product photos, type the object name in the description field. The camera option only reads visible text until a vision AI model is connected.")
         hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
         if hs_photo is not None:
             detected_text_for_hs, hs_warning = extract_text_from_image(hs_photo.getvalue())
@@ -1733,75 +1734,75 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     if not product_text.strip():
         st.stop()
 
-        # 1) Section: show all official HS sections, not only the few rows in the sample reference.
-        sections = list(HS_SECTIONS)
-        extra_sections = sorted({r["section"] for r in tree if r.get("section") not in sections})
-        sections += extra_sections
-        default_section = suggestions[0]["section"] if suggestions and suggestions[0].get("section") in sections else sections[0]
-        section = st.selectbox(ct["section"], sections, index=sections.index(default_section), key=f"hs_section_{suggestions[0]['code'] if suggestions else 'manual'}")
+    # 1) Section: show all official HS sections, not only the few rows in the sample reference.
+    sections = list(HS_SECTIONS)
+    extra_sections = sorted({r["section"] for r in tree if r.get("section") not in sections})
+    sections += extra_sections
+    default_section = suggestions[0]["section"] if suggestions and suggestions[0].get("section") in sections else sections[0]
+    section = st.selectbox(ct["section"], sections, index=sections.index(default_section), key=f"hs_section_{suggestions[0]['code'] if suggestions else 'manual'}")
 
-        # 2) Chapter: show all chapters belonging to that official section.
-        chapters = HS_CHAPTERS_BY_SECTION.get(section, [])
-        if not chapters:
-            chapters = sorted({r["chapter"] for r in tree if r.get("section") == section}) or ["Uploaded reference chapter"]
-        suggested_chapter = suggestions[0]["chapter"] if suggestions and suggestions[0].get("section") == section else None
-        default_chapter = suggested_chapter if suggested_chapter in chapters else chapters[0]
-        chapter = st.selectbox(ct["chapter"], chapters, index=chapters.index(default_chapter), key=f"hs_chapter_{suggestions[0]['code'] if suggestions else section}")
-        chapter_num = chapter_number_from_code_or_label(chapter)
+    # 2) Chapter: show all chapters belonging to that official section.
+    chapters = HS_CHAPTERS_BY_SECTION.get(section, [])
+    if not chapters:
+        chapters = sorted({r["chapter"] for r in tree if r.get("section") == section}) or ["Uploaded reference chapter"]
+    suggested_chapter = suggestions[0]["chapter"] if suggestions and suggestions[0].get("section") == section else None
+    default_chapter = suggested_chapter if suggested_chapter in chapters else chapters[0]
+    chapter = st.selectbox(ct["chapter"], chapters, index=chapters.index(default_chapter), key=f"hs_chapter_{suggestions[0]['code'] if suggestions else section}")
+    chapter_num = chapter_number_from_code_or_label(chapter)
 
-        # 3) Heading: from loaded/built-in reference rows under the selected chapter.
-        chapter_rows = [r for r in tree if chapter_number_from_code_or_label(r.get("chapter", "")) == chapter_num]
-        if not chapter_rows:
-            st.warning("No heading/subheading is loaded for the selected chapter. Check that the selected section/chapter matches the suggestion above, or upload a complete HS/SH CSV reference for this chapter.")
-            manual_code = st.text_input("Manual HS/SH code if known", placeholder="Example: 6109.10")
-            manual_desc = st.text_input("Manual reference meaning/description", placeholder="Example: T-shirts, singlets and other vests, of cotton")
-            selected = {
-                "section": section,
-                "chapter": chapter,
-                "heading": "Manual heading",
-                "subheading": manual_code or "Manual HS/SH code",
-                "code": manual_code or "Not determined",
-                "description": manual_desc or "No loaded reference description for this chapter.",
-                "keywords": "",
-                "checks": [
-                    "The selected section and chapter match the nature/function of the product.",
-                    "The exact heading/subheading was checked against an official HS/national tariff reference.",
-                    "The material, use/function, and product form support the selected code.",
-                ],
-            }
-        else:
-            headings = sorted({r["heading"] for r in chapter_rows})
-            suggested_heading = suggestions[0]["heading"] if suggestions and chapter_number_from_code_or_label(suggestions[0].get("chapter", "")) == chapter_num else None
-            default_heading = suggested_heading if suggested_heading in headings else headings[0]
-            heading = st.selectbox(ct["heading"], headings, index=headings.index(default_heading), key=f"hs_heading_{suggestions[0]['code'] if suggestions else chapter_num}")
+    # 3) Heading: from loaded/built-in reference rows under the selected chapter.
+    chapter_rows = [r for r in tree if chapter_number_from_code_or_label(r.get("chapter", "")) == chapter_num]
+    if not chapter_rows:
+        st.warning("No heading/subheading is loaded for the selected chapter. Check that the selected section/chapter matches the suggestion above, or upload a complete HS/SH CSV reference for this chapter.")
+        manual_code = st.text_input("Manual HS/SH code if known", placeholder="Example: 6109.10")
+        manual_desc = st.text_input("Manual reference meaning/description", placeholder="Example: T-shirts, singlets and other vests, of cotton")
+        selected = {
+            "section": section,
+            "chapter": chapter,
+            "heading": "Manual heading",
+            "subheading": manual_code or "Manual HS/SH code",
+            "code": manual_code or "Not determined",
+            "description": manual_desc or "No loaded reference description for this chapter.",
+            "keywords": "",
+            "checks": [
+                "The selected section and chapter match the nature/function of the product.",
+                "The exact heading/subheading was checked against an official HS/national tariff reference.",
+                "The material, use/function, and product form support the selected code.",
+            ],
+        }
+    else:
+        headings = sorted({r["heading"] for r in chapter_rows})
+        suggested_heading = suggestions[0]["heading"] if suggestions and chapter_number_from_code_or_label(suggestions[0].get("chapter", "")) == chapter_num else None
+        default_heading = suggested_heading if suggested_heading in headings else headings[0]
+        heading = st.selectbox(ct["heading"], headings, index=headings.index(default_heading), key=f"hs_heading_{suggestions[0]['code'] if suggestions else chapter_num}")
 
-            sub_rows = [r for r in chapter_rows if r["heading"] == heading]
-            sub_labels = [r["subheading"] for r in sub_rows]
-            suggested_sub = suggestions[0]["subheading"] if suggestions and suggestions[0].get("heading") == heading else None
-            default_sub = suggested_sub if suggested_sub in sub_labels else sub_labels[0]
-            subheading = st.selectbox(ct["subheading"], sub_labels, index=sub_labels.index(default_sub), key=f"hs_subheading_{suggestions[0]['code'] if suggestions else heading}")
-            selected = next(r for r in sub_rows if r["subheading"] == subheading)
+        sub_rows = [r for r in chapter_rows if r["heading"] == heading]
+        sub_labels = [r["subheading"] for r in sub_rows]
+        suggested_sub = suggestions[0]["subheading"] if suggestions and suggestions[0].get("heading") == heading else None
+        default_sub = suggested_sub if suggested_sub in sub_labels else sub_labels[0]
+        subheading = st.selectbox(ct["subheading"], sub_labels, index=sub_labels.index(default_sub), key=f"hs_subheading_{suggestions[0]['code'] if suggestions else heading}")
+        selected = next(r for r in sub_rows if r["subheading"] == subheading)
 
-        st.subheader(ct["checklist"])
-        confirmations = []
-        for idx, check in enumerate(selected.get("checks", []), 1):
-            confirmations.append(st.checkbox(check, key=f"hs_check_{selected['code']}_{idx}"))
+    st.subheader(ct["checklist"])
+    confirmations = []
+    for idx, check in enumerate(selected.get("checks", []), 1):
+        confirmations.append(st.checkbox(check, key=f"hs_check_{selected['code']}_{idx}"))
 
-        confirmed = sum(1 for x in confirmations if x)
-        total = max(1, len(confirmations))
-        product_score = similarity_score(product_text, selected.get("description", "") + " " + selected.get("keywords", "")) if product_text.strip() else 0
-        loaded_exact = selected.get("code") and selected.get("code") != "Not determined" and "No loaded reference" not in selected.get("description", "")
-        confidence = min(100, int(round((confirmed / total) * 60 + min(product_score, 30) + (10 if loaded_exact else 0))))
+    confirmed = sum(1 for x in confirmations if x)
+    total = max(1, len(confirmations))
+    product_score = similarity_score(product_text, selected.get("description", "") + " " + selected.get("keywords", "")) if product_text.strip() else 0
+    loaded_exact = selected.get("code") and selected.get("code") != "Not determined" and "No loaded reference" not in selected.get("description", "")
+    confidence = min(100, int(round((confirmed / total) * 60 + min(product_score, 30) + (10 if loaded_exact else 0))))
 
-        st.header(ct["result"])
-        col1, col2 = st.columns(2)
-        col1.metric(ct["exact_code"], selected["code"])
-        col2.metric(ct["confidence"], f"{confidence}%")
-        st.write(f"**{ct['meaning']}:** {selected['description']}")
-        st.write(f"**{ct['why']}:** {section} → {chapter} → {selected.get('heading', '')} → {selected.get('subheading', '')}")
-        if not loaded_exact:
-            st.warning("This chapter is available, but no exact subheading is loaded for it. Upload a complete HS/SH or national tariff CSV to obtain exact codes for all chapters.")
-        st.warning(ct["warning"])
+    st.header(ct["result"])
+    col1, col2 = st.columns(2)
+    col1.metric(ct["exact_code"], selected["code"])
+    col2.metric(ct["confidence"], f"{confidence}%")
+    st.write(f"**{ct['meaning']}:** {selected['description']}")
+    st.write(f"**{ct['why']}:** {section} → {chapter} → {selected.get('heading', '')} → {selected.get('subheading', '')}")
+    if not loaded_exact:
+        st.warning("This chapter is available, but no exact subheading is loaded for it. Upload a complete HS/SH or national tariff CSV to obtain exact codes for all chapters.")
+    st.warning(ct["warning"])
 
     report = f"""TradeMindAI HS/SH Classification Suggestion
 Generated: {datetime.now(UTC).isoformat()}
@@ -1832,7 +1833,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v29")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v30")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
