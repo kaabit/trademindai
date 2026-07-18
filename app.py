@@ -178,22 +178,34 @@ def safe_import(module_name: str):
         return None
 
 
-def get_tesseract_cmd() -> str:
-    """Return the Tesseract executable path if available.
+def get_tesseract_cmd():
+    """Find the local Tesseract executable.
 
-    On Fedora/RHEL it is usually /usr/bin/tesseract.
-    On Windows it is usually C:\\Program Files\\Tesseract-OCR\\tesseract.exe.
+    Fedora normally installs it at /usr/bin/tesseract. Some Streamlit
+    environments do not inherit the shell PATH, so we check common paths too.
     """
-    candidates = [
-        os.environ.get("TESSERACT_CMD", ""),
-        shutil.which("tesseract") or "",
+    import os
+    import shutil
+
+    env_cmd = os.environ.get("TESSERACT_CMD")
+    if env_cmd and os.path.exists(env_cmd):
+        return env_cmd
+
+    found = shutil.which("tesseract")
+    if found:
+        return found
+
+    for candidate in [
         "/usr/bin/tesseract",
+        "/bin/tesseract",
         "/usr/local/bin/tesseract",
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-    ]
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
+        "/opt/homebrew/bin/tesseract",
+        "/usr/local/opt/tesseract/bin/tesseract",
+        r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    ]:
+        if os.path.exists(candidate):
             return candidate
+
     return ""
 
 
@@ -264,9 +276,9 @@ def extract_text_from_image(file_bytes: bytes) -> Tuple[str, str]:
     tesseract_cmd = get_tesseract_cmd()
     if not tesseract_cmd:
         return "", (
-            "Tesseract is installed? Python could not find it. "
-            "On Fedora install it with: sudo dnf install tesseract. "
-            "Then restart Streamlit. You can also export TESSERACT_CMD=/usr/bin/tesseract."
+            "OCR is not available in the current Streamlit process. "
+            "On Fedora run: sudo dnf install tesseract tesseract-langpack-eng. "
+            "Then restart Streamlit. If already installed, run: export TESSERACT_CMD=/usr/bin/tesseract before starting Streamlit."
         )
 
     try:
@@ -1587,6 +1599,9 @@ def extract_product_candidate_from_text(document_text: str) -> str:
             if len(cleaned) >= 3:
                 return cleaned[:120]
 
+    if len(raw.strip()) < 3:
+        return ""
+
     normalized = normalize_product_query_for_hs(raw) if "normalize_product_query_for_hs" in globals() else raw.lower()
     best = ""
     best_hits = 0
@@ -1639,6 +1654,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
 
     st.markdown("**Object/HS detection from description, document, or photo**")
+    st.caption("Note: upload/photo detection uses OCR text. A product photo without readable text needs a vision AI model; otherwise type the object name above.")
     hs_detect_method = st.radio(
         "HS input source",
         ["Use description above", "Upload image/PDF/document", "Take a picture"],
@@ -1673,12 +1689,22 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
                 st.warning("Photo captured, but OCR did not detect readable text. For product photos without text, type the object name above or connect a vision AI model later.")
 
     if st.button("🔎 Look for HS code", key="look_for_hs_code_btn"):
-        source_for_detection = product_text
-        if hs_detect_method != "Use description above" and detected_text_for_hs:
-            source_for_detection = detected_text_for_hs
-        candidate = extract_product_candidate_from_text(source_for_detection)
-        st.session_state["hs_last_candidate"] = candidate or source_for_detection
-        st.session_state["hs_active_product_text"] = candidate or source_for_detection
+        source_for_detection = product_text.strip()
+        if hs_detect_method != "Use description above":
+            # For upload/photo, prefer extracted OCR text only when available.
+            # If the image has no text, do not reuse an old candidate.
+            if detected_text_for_hs.strip():
+                source_for_detection = detected_text_for_hs.strip()
+            elif not source_for_detection:
+                st.session_state.pop("hs_last_candidate", None)
+                st.session_state.pop("hs_active_product_text", None)
+                st.warning("No readable text was detected from the upload/photo. Type the object name in the description field, or connect a vision AI model for true image object recognition.")
+                source_for_detection = ""
+
+        if source_for_detection:
+            candidate = extract_product_candidate_from_text(source_for_detection)
+            st.session_state["hs_last_candidate"] = candidate or source_for_detection
+            st.session_state["hs_active_product_text"] = candidate or source_for_detection
 
     if st.session_state.get("hs_active_product_text"):
         product_text = st.session_state.get("hs_active_product_text", product_text)
@@ -1799,7 +1825,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v26")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v27")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
