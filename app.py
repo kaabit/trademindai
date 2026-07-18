@@ -1548,6 +1548,87 @@ def suggest_hs_options(product_text: str, tree: List[Dict[str, str]], limit: int
     return [row for score, row in scored[:limit] if score >= 8]
 
 
+
+def extract_product_candidate_from_text(document_text: str) -> str:
+    """Extract a likely product/object name from manifest, invoice, OCR, or manual text."""
+    raw = (document_text or "").strip()
+    if not raw:
+        return ""
+
+    lines = [re.sub(r"\s+", " ", l).strip() for l in raw.splitlines() if re.sub(r"\s+", " ", l).strip()]
+    joined = " ".join(lines)
+
+    label_patterns = [
+        r"Description\s+marchandise[s]?\s+(.{3,160})",
+        r"Description of goods\s+(.{3,160})",
+        r"Goods description\s+(.{3,160})",
+        r"Product description\s+(.{3,160})",
+        r"Description\s*:\s*(.{3,160})",
+        r"Désignation\s*:\s*(.{3,160})",
+        r"Marchandise[s]?\s*:\s*(.{3,160})",
+    ]
+    for pat in label_patterns:
+        m = re.search(pat, joined, flags=re.IGNORECASE)
+        if m:
+            candidate = m.group(1)
+            candidate = re.split(r"\b(HS|Code|Colis|Poids|Volume|Valeur|Origine|Qty|Quantity|Total)\b", candidate, flags=re.IGNORECASE)[0]
+            candidate = re.sub(r"[^A-Za-zÀ-ÿ0-9\u0600-\u06FF /:'’,-]", " ", candidate)
+            candidate = re.sub(r"\s+", " ", candidate).strip(" -/,")
+            if len(candidate) >= 3:
+                return candidate[:120]
+
+    for line in lines:
+        if re.search(r"\b\d{4}\.\d{2}\b|\b\d{4}\b", line) and not re.search(r"^\d+[\s/.-]*$", line):
+            cleaned = re.sub(r"\b\d{4}(?:\.\d{2})?\b", " ", line)
+            cleaned = re.sub(r"\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\s*(EUR|USD|GBP|TND|MAD|AED)?\b", " ", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\b(cartons?|palettes?|kg|cbm|eur|usd|origin|france|tunisia|ue)\b", " ", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"[^A-Za-zÀ-ÿ0-9\u0600-\u06FF /:'’,-]", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" -/,")
+            if len(cleaned) >= 3:
+                return cleaned[:120]
+
+    normalized = normalize_product_query_for_hs(raw) if "normalize_product_query_for_hs" in globals() else raw.lower()
+    best = ""
+    best_hits = 0
+    try:
+        for code, desc, keywords in BROAD_HS_KEYWORD_CATALOG:
+            hits = 0
+            for kw in re.findall(r"[A-Za-zÀ-ÿ0-9\u0600-\u06FF]+", keywords.lower()):
+                if len(kw) >= 3 and kw in normalized:
+                    hits += 1
+            if hits > best_hits:
+                best_hits = hits
+                best = desc
+    except Exception:
+        pass
+    if best:
+        return best
+
+    for line in lines:
+        if len(line) >= 3 and not re.match(r"^(invoice|manifest|date|total|page)\b", line, flags=re.IGNORECASE):
+            return line[:120]
+    return raw[:120]
+
+
+def hs_suggestions_dataframe(product_text: str, hs_reference):
+    """Return a dataframe of HS suggestions for a product/document text."""
+    try:
+        tree = build_classification_tree(hs_reference)
+        suggestions = suggest_hs_options(product_text, tree, limit=8)
+        rows = []
+        for s in suggestions:
+            rows.append({
+                "HS/SH": s.get("code", ""),
+                "Section": s.get("section", ""),
+                "Chapter": s.get("chapter", ""),
+                "Heading": s.get("heading", ""),
+                "Description": s.get("description", ""),
+            })
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
 def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     ct = CLASSIFY_TEXT[lang]
     tree = build_classification_tree(hs_reference)
@@ -1556,6 +1637,50 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     st.info(ct["hs_intro"])
 
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
+
+    st.markdown("**Object/HS detection from description, document, or photo**")
+    hs_detect_method = st.radio(
+        "HS input source",
+        ["Use description above", "Upload image/PDF/document", "Take a picture"],
+        horizontal=True,
+        key="hs_detect_method",
+    )
+
+    detected_text_for_hs = ""
+    if hs_detect_method == "Upload image/PDF/document":
+        hs_upload = st.file_uploader(
+            "Upload document/image for HS detection",
+            type=["txt", "pdf", "docx", "png", "jpg", "jpeg", "webp", "tif", "tiff"],
+            key="hs_object_upload",
+        )
+        if hs_upload is not None:
+            detected_text_for_hs = extract_text_from_uploaded_file(hs_upload, lang)
+            if detected_text_for_hs:
+                st.text_area("Extracted text used for HS detection", detected_text_for_hs, height=140, key="hs_upload_extracted_text")
+            else:
+                st.warning("No readable text was extracted. This prototype needs OCR text or a typed description. For direct visual object recognition, connect a vision AI model later.")
+    elif hs_detect_method == "Take a picture":
+        hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
+        if hs_photo is not None:
+            detected_text_for_hs = extract_text_from_uploaded_file(hs_photo, lang)
+            if detected_text_for_hs:
+                st.text_area("Text detected from photo", detected_text_for_hs, height=140, key="hs_photo_extracted_text")
+            else:
+                st.warning("Photo captured, but OCR did not detect readable text. For product photos without text, type the object name above or connect a vision AI model later.")
+
+    if st.button("🔎 Look for HS code", key="look_for_hs_code_btn"):
+        source_for_detection = product_text
+        if hs_detect_method != "Use description above" and detected_text_for_hs:
+            source_for_detection = detected_text_for_hs
+        candidate = extract_product_candidate_from_text(source_for_detection)
+        st.session_state["hs_product_text"] = candidate or source_for_detection
+        st.session_state["hs_last_candidate"] = candidate
+        st.rerun()
+
+    if st.session_state.get("hs_last_candidate"):
+        st.success(f"Detected object/product candidate: {st.session_state['hs_last_candidate']}")
+        product_text = st.session_state.get("hs_product_text", product_text)
+
     suggestions = suggest_hs_options(product_text, tree, limit=8) if product_text.strip() else []
     if product_text.strip():
         if suggestions:
@@ -1671,7 +1796,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v24")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v25")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
@@ -1740,6 +1865,19 @@ if warnings:
 st.caption(t["ocr_note"])
 default_text = "\n".join(extracted_blocks).strip()
 text = st.text_area(t["paste"], value=default_text, height=320, placeholder=LOCAL_TEXT[lang]["placeholder"])
+
+st.markdown("### HS/SH search from this document")
+if st.button("🔎 Look for HS code from current description/document", key="doc_to_hs_btn"):
+    candidate = extract_product_candidate_from_text(text)
+    if candidate:
+        st.success(f"Detected object/product candidate: {candidate}")
+        hs_df = hs_suggestions_dataframe(candidate, hs_reference)
+        if not hs_df.empty:
+            st.dataframe(hs_df, width="stretch")
+        else:
+            st.warning("No HS suggestion found from the current built-in/reference data. Upload a complete HS/SH CSV or open the HS determination page.")
+    else:
+        st.warning("No product/object description was found. Upload a document, take a picture, or paste text first.")
 
 if st.button(t["review"], type="primary"):
     if not text.strip():
