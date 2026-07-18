@@ -197,6 +197,7 @@ def get_tesseract_cmd():
 
     for candidate in [
         "/usr/bin/tesseract",
+        "/app/.apt/usr/bin/tesseract",
         "/bin/tesseract",
         "/usr/local/bin/tesseract",
         "/opt/homebrew/bin/tesseract",
@@ -1825,7 +1826,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v27")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v28")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
