@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 import streamlit as st
+import json
 
 st.set_page_config(page_title="TradeMindAI", page_icon="🌍", layout="wide")
 
@@ -1574,6 +1575,202 @@ def get_openai_api_key():
     return os.environ.get("OPENAI_API_KEY", "")
 
 
+
+
+def get_google_vision_api_key():
+    """Read Google Cloud Vision API key from Streamlit secrets or environment.
+
+    This is useful when service account key creation is blocked by organization policy.
+    Restrict the key to Cloud Vision API in Google Cloud Console.
+    """
+    try:
+        key = st.secrets.get("GOOGLE_VISION_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("GOOGLE_VISION_API_KEY", "")
+
+
+def identify_object_with_google_vision_api_key(file_bytes: bytes) -> Tuple[str, str]:
+    """Use Google Cloud Vision REST API with an API key for label/object detection."""
+    api_key = get_google_vision_api_key()
+    if not api_key:
+        return "", "Google Vision API key is not configured."
+
+    try:
+        import base64
+        import requests
+    except Exception:
+        return "", "Google Vision API-key mode needs the requests package. Add 'requests' to requirements.txt and redeploy."
+
+    try:
+        image_b64 = base64.b64encode(file_bytes).decode("utf-8")
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": image_b64},
+                    "features": [
+                        {"type": "OBJECT_LOCALIZATION", "maxResults": 10},
+                        {"type": "LABEL_DETECTION", "maxResults": 10},
+                    ],
+                }
+            ]
+        }
+        response = requests.post(url, json=payload, timeout=30)
+        data = response.json()
+        if response.status_code >= 400:
+            err = data.get("error", {})
+            msg = err.get("message", str(data))
+            return "", f"Google Vision API-key request failed: {msg}"
+
+        result = (data.get("responses") or [{}])[0]
+        if "error" in result:
+            return "", f"Google Vision returned an error: {result['error'].get('message', result['error'])}"
+
+        labels = []
+        for item in result.get("localizedObjectAnnotations", []) or []:
+            name = item.get("name")
+            score = float(item.get("score", 0.0) or 0.0)
+            if name:
+                labels.append((name, score, "object"))
+        for item in result.get("labelAnnotations", []) or []:
+            name = item.get("description")
+            score = float(item.get("score", 0.0) or 0.0)
+            if name:
+                labels.append((name, score, "label"))
+
+        if not labels:
+            return "", "Google Cloud Vision returned no labels/object names."
+
+        return google_vision_labels_to_candidate(labels)
+    except Exception as exc:
+        return "", f"Google Vision API-key mode failed: {exc}"
+
+
+def google_vision_labels_to_candidate(labels) -> Tuple[str, str]:
+    """Convert Google Vision labels into a concise HS-search product candidate."""
+    generic = {
+        "product", "font", "line", "material property", "rectangle", "pattern",
+        "electric blue", "wood", "floor", "table", "desk", "technology",
+        "gadget", "office supplies", "writing", "stationery"
+    }
+    preferred_keywords = [
+        "pen", "ballpoint", "phone", "smartphone", "chair", "bicycle", "bike",
+        "pump", "shoe", "bag", "watch", "laptop", "computer", "shirt", "glasses",
+        "spectacles", "keyboard", "mouse", "bottle", "cup", "lamp", "motor"
+    ]
+
+    ranked = []
+    for name, score, kind in labels:
+        n = str(name).lower().strip()
+        rank = float(score or 0.0)
+        if kind == "object":
+            rank += 0.25
+        if any(k in n for k in preferred_keywords):
+            rank += 0.60
+        if n in generic:
+            rank -= 0.50
+        ranked.append((rank, str(name), float(score or 0.0), kind))
+
+    ranked.sort(reverse=True, key=lambda x: x[0])
+    if not ranked:
+        return "", "No usable Google Vision labels."
+
+    all_label_text = " ".join(x[1].lower() for x in ranked[:8])
+    if "pen" in all_label_text or "ballpoint" in all_label_text or "writing implement" in all_label_text:
+        candidate = "ball point pen"
+    elif "mobile phone" in all_label_text or "smartphone" in all_label_text or "phone" in all_label_text:
+        candidate = "smartphone"
+    elif "chair" in all_label_text or "seat" in all_label_text:
+        candidate = "chair"
+    elif "bicycle" in all_label_text or "bike" in all_label_text:
+        candidate = "bicycle"
+    elif "pump" in all_label_text:
+        candidate = "liquid pump"
+    elif "glasses" in all_label_text or "spectacles" in all_label_text or "goggles" in all_label_text:
+        candidate = "spectacles glasses"
+    else:
+        candidate = ranked[0][1]
+
+    label_summary = ", ".join([f"{name} ({kind}, {score:.2f})" for _, name, score, kind in ranked[:5]])
+    return candidate[:120], f"Google Cloud Vision product candidate: {candidate}. Labels: {label_summary}."
+
+
+def get_google_credentials_info():
+    """Read Google Cloud service account JSON from Streamlit secrets or env."""
+    raw = ""
+    try:
+        raw = st.secrets.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
+    except Exception:
+        raw = ""
+    if not raw:
+        raw = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
+
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    return None
+
+
+def identify_object_with_google_vision(file_bytes: bytes) -> Tuple[str, str]:
+    """Use Google Cloud Vision to identify the main product.
+
+    Preferred for Streamlit Cloud:
+    - GOOGLE_VISION_API_KEY secret, because it does not require service account key files.
+
+    Also supported:
+    - GOOGLE_APPLICATION_CREDENTIALS_JSON service-account JSON secret
+    - Google Application Default Credentials for local/Google Cloud workloads
+    """
+    if get_google_vision_api_key():
+        return identify_object_with_google_vision_api_key(file_bytes)
+
+    try:
+        from google.cloud import vision
+        from google.oauth2 import service_account
+    except Exception:
+        return "", "Google Cloud Vision needs google-cloud-vision, or configure GOOGLE_VISION_API_KEY for REST API-key mode."
+
+    try:
+        credentials_info = get_google_credentials_info()
+        if credentials_info:
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            client = vision.ImageAnnotatorClient(credentials=credentials)
+        else:
+            client = vision.ImageAnnotatorClient()
+
+        image = vision.Image(content=file_bytes)
+        labels_response = client.label_detection(image=image, max_results=10)
+        object_response = client.object_localization(image=image)
+
+        if labels_response.error.message:
+            return "", f"Google Vision label detection error: {labels_response.error.message}"
+
+        object_note = ""
+        if object_response.error.message:
+            object_note = f" Google Vision object detection warning: {object_response.error.message}"
+
+        labels = []
+        for item in object_response.localized_object_annotations:
+            if item.name:
+                labels.append((item.name, float(item.score or 0.0), "object"))
+        for item in labels_response.label_annotations:
+            if item.description:
+                labels.append((item.description, float(item.score or 0.0), "label"))
+
+        candidate, note = google_vision_labels_to_candidate(labels)
+        if object_note and note:
+            note += object_note
+        return candidate, note
+    except Exception as exc:
+        return "", f"Google Cloud Vision failed: {exc}"
+
+
 def identify_object_with_vision_ai(file_bytes: bytes, mime_type: str = "image/jpeg") -> Tuple[str, str]:
     """Use a vision-capable AI model to identify the main trade object in an image.
 
@@ -1736,7 +1933,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
 
     st.markdown("**Object/HS detection from description, document, or photo**")
-    st.caption("Use typed description for normal HS search. Upload/photo first uses OCR text; if OPENAI_API_KEY is configured, AI vision can identify the product from a pure photo.")
+    st.caption("Use typed description for normal HS search. Upload/photo first uses OCR text; if Google Cloud Vision or OPENAI_API_KEY is configured, AI vision can identify the product from a pure photo.")
     hs_detect_method = st.radio(
         "HS input source",
         ["Use description above", "Upload image/PDF/document", "Take a picture"],
@@ -1758,18 +1955,25 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
             if detected_text_for_hs:
                 st.text_area("Extracted text used for HS detection", detected_text_for_hs, height=140, key="hs_upload_extracted_text")
             elif is_image_upload(hs_upload):
-                vision_candidate, vision_note = identify_object_with_vision_ai(hs_upload.getvalue(), hs_upload.type or "image/jpeg")
-                if vision_note:
-                    st.info(vision_note)
-                if vision_candidate:
-                    detected_text_for_hs = vision_candidate
-                    st.success(f"AI vision product candidate: {vision_candidate}")
+                google_candidate, google_note = identify_object_with_google_vision(hs_upload.getvalue())
+                if google_note:
+                    st.info(google_note)
+                if google_candidate:
+                    detected_text_for_hs = google_candidate
+                    st.success(f"Google Vision product candidate: {google_candidate}")
                 else:
-                    st.warning("No readable text was extracted and AI vision could not identify the product. Type the object name above.")
+                    vision_candidate, vision_note = identify_object_with_vision_ai(hs_upload.getvalue(), hs_upload.type or "image/jpeg")
+                    if vision_note:
+                        st.info(vision_note)
+                    if vision_candidate:
+                        detected_text_for_hs = vision_candidate
+                        st.success(f"AI vision product candidate: {vision_candidate}")
+                    else:
+                        st.warning("No readable text was extracted and no vision API could identify the product. Type the object name above.")
             else:
                 st.warning("No readable text was extracted. For scanned PDFs/images, use a clearer file or connect AI vision for image understanding.")
     elif hs_detect_method == "Take a picture":
-        st.info("For product photos, AI vision will be used when OPENAI_API_KEY is configured. Without it, type the object name in the description field.")
+        st.info("For product photos, Google Cloud Vision will be used when GOOGLE_APPLICATION_CREDENTIALS_JSON is configured. Without a vision API, type the object name in the description field.")
         hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
         if hs_photo is not None:
             photo_bytes = hs_photo.getvalue()
@@ -1779,14 +1983,21 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
             if detected_text_for_hs:
                 st.text_area("Text detected from photo", detected_text_for_hs, height=140, key="hs_photo_extracted_text")
             else:
-                vision_candidate, vision_note = identify_object_with_vision_ai(photo_bytes, hs_photo.type or "image/jpeg")
-                if vision_note:
-                    st.info(vision_note)
-                if vision_candidate:
-                    detected_text_for_hs = vision_candidate
-                    st.success(f"AI vision product candidate: {vision_candidate}")
+                google_candidate, google_note = identify_object_with_google_vision(photo_bytes)
+                if google_note:
+                    st.info(google_note)
+                if google_candidate:
+                    detected_text_for_hs = google_candidate
+                    st.success(f"Google Vision product candidate: {google_candidate}")
                 else:
-                    st.warning("Photo captured, but no readable text or clear product object was detected. Type the object name above.")
+                    vision_candidate, vision_note = identify_object_with_vision_ai(photo_bytes, hs_photo.type or "image/jpeg")
+                    if vision_note:
+                        st.info(vision_note)
+                    if vision_candidate:
+                        detected_text_for_hs = vision_candidate
+                        st.success(f"AI vision product candidate: {vision_candidate}")
+                    else:
+                        st.warning("Photo captured, but no readable text or clear product object was detected. Type the object name above.")
 
     if st.button("🔎 Look for HS code", key="look_for_hs_code_btn"):
         # Clear old result first so upload/photo failure does not reuse a previous search.
@@ -1931,7 +2142,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v31")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v33")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
@@ -1939,10 +2150,16 @@ with st.sidebar:
         st.caption(f"OCR engine: {tesseract_path}")
     else:
         st.caption(lt["ocr_engine_missing"])
-    if get_openai_api_key():
-        st.caption("AI vision: enabled")
+    if get_google_vision_api_key():
+        st.caption("Google Cloud Vision: enabled with API key")
+    elif get_google_credentials_info():
+        st.caption("Google Cloud Vision: enabled with service account")
     else:
-        st.caption("AI vision: not configured")
+        st.caption("Google Cloud Vision: not configured")
+    if get_openai_api_key():
+        st.caption("OpenAI vision fallback: enabled")
+    else:
+        st.caption("OpenAI vision fallback: not configured")
     st.header(t["settings"])
     shipment_type = st.selectbox(t["shipment_type"], lt["shipment_options"])
     origin = st.text_input(t["origin"], placeholder="Tunisia / France / China")

@@ -5,3 +5,6 @@ python-docx
 pillow
 pytesseract
 openai
+google-cloud-vision
+google-auth
+requests
