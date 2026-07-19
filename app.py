@@ -1562,6 +1562,87 @@ def suggest_hs_options(product_text: str, tree: List[Dict[str, str]], limit: int
 
 
 
+
+def get_openai_api_key():
+    """Read OpenAI API key from Streamlit secrets or environment."""
+    try:
+        key = st.secrets.get("OPENAI_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("OPENAI_API_KEY", "")
+
+
+def identify_object_with_vision_ai(file_bytes: bytes, mime_type: str = "image/jpeg") -> Tuple[str, str]:
+    """Use a vision-capable AI model to identify the main trade object in an image.
+
+    Returns: (short_product_description, warning_or_note)
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return "", "AI vision is not configured. Add OPENAI_API_KEY in Streamlit secrets to identify products from photos."
+
+    try:
+        import base64
+        from openai import OpenAI
+    except Exception:
+        return "", "AI vision needs the OpenAI Python package. Add 'openai' to requirements.txt and redeploy."
+
+    try:
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+        b64 = base64.b64encode(file_bytes).decode("utf-8")
+        data_url = f"data:{mime_type};base64,{b64}"
+
+        model = os.environ.get("OPENAI_VISION_MODEL", "")
+        try:
+            model = st.secrets.get("OPENAI_VISION_MODEL", model)
+        except Exception:
+            pass
+        model = model or "gpt-4o-mini"
+
+        client = OpenAI(api_key=api_key)
+        response = client.responses.create(
+            model=model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Identify the main physical product/object in this image for customs HS classification. "
+                                "Return only a concise commercial product description, not a sentence. "
+                                "Examples: ball point pen, smartphone, wooden chair, centrifugal water pump, cotton T-shirt. "
+                                "If the image is unclear or no product is visible, return: unclear image"
+                            ),
+                        },
+                        {"type": "input_image", "image_url": data_url},
+                    ],
+                }
+            ],
+        )
+        result = (getattr(response, "output_text", "") or "").strip()
+        result = result.replace("\n", " ").strip()
+        if not result:
+            return "", "AI vision returned no object description."
+        if "unclear" in result.lower():
+            return "", "AI vision could not identify a clear product/object in the photo."
+        return result[:120], f"AI vision identified product candidate using model: {model}"
+    except Exception as exc:
+        return "", f"AI vision failed: {exc}"
+
+
+def is_image_upload(uploaded_file) -> bool:
+    try:
+        name = (uploaded_file.name or "").lower()
+        mime = uploaded_file.type or ""
+    except Exception:
+        return False
+    return mime.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"))
+
+
 def extract_product_candidate_from_text(document_text: str) -> str:
     """Extract a likely product/object name from manifest, invoice, OCR, or manual text."""
     raw = (document_text or "").strip()
@@ -1655,7 +1736,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
 
     st.markdown("**Object/HS detection from description, document, or photo**")
-    st.caption("Use typed description for normal HS search. Upload/photo works only when the file/photo contains readable text. Pure product-photo recognition needs a vision AI model.")
+    st.caption("Use typed description for normal HS search. Upload/photo first uses OCR text; if OPENAI_API_KEY is configured, AI vision can identify the product from a pure photo.")
     hs_detect_method = st.radio(
         "HS input source",
         ["Use description above", "Upload image/PDF/document", "Take a picture"],
@@ -1676,19 +1757,36 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
                 st.info(hs_warning)
             if detected_text_for_hs:
                 st.text_area("Extracted text used for HS detection", detected_text_for_hs, height=140, key="hs_upload_extracted_text")
+            elif is_image_upload(hs_upload):
+                vision_candidate, vision_note = identify_object_with_vision_ai(hs_upload.getvalue(), hs_upload.type or "image/jpeg")
+                if vision_note:
+                    st.info(vision_note)
+                if vision_candidate:
+                    detected_text_for_hs = vision_candidate
+                    st.success(f"AI vision product candidate: {vision_candidate}")
+                else:
+                    st.warning("No readable text was extracted and AI vision could not identify the product. Type the object name above.")
             else:
-                st.warning("No readable text was extracted. This upload/photo option works only when the image/document contains readable text. For a product photo without text, type the object name above or connect a vision AI model.")
+                st.warning("No readable text was extracted. For scanned PDFs/images, use a clearer file or connect AI vision for image understanding.")
     elif hs_detect_method == "Take a picture":
-        st.info("For product photos, type the object name in the description field. The camera option only reads visible text until a vision AI model is connected.")
+        st.info("For product photos, AI vision will be used when OPENAI_API_KEY is configured. Without it, type the object name in the description field.")
         hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
         if hs_photo is not None:
-            detected_text_for_hs, hs_warning = extract_text_from_image(hs_photo.getvalue())
+            photo_bytes = hs_photo.getvalue()
+            detected_text_for_hs, hs_warning = extract_text_from_image(photo_bytes)
             if hs_warning:
                 st.info(hs_warning)
             if detected_text_for_hs:
                 st.text_area("Text detected from photo", detected_text_for_hs, height=140, key="hs_photo_extracted_text")
             else:
-                st.warning("Photo captured, but no readable text was detected. For a pure product photo, this prototype cannot identify the object visually yet. Type the object name above or connect a vision AI model.")
+                vision_candidate, vision_note = identify_object_with_vision_ai(photo_bytes, hs_photo.type or "image/jpeg")
+                if vision_note:
+                    st.info(vision_note)
+                if vision_candidate:
+                    detected_text_for_hs = vision_candidate
+                    st.success(f"AI vision product candidate: {vision_candidate}")
+                else:
+                    st.warning("Photo captured, but no readable text or clear product object was detected. Type the object name above.")
 
     if st.button("🔎 Look for HS code", key="look_for_hs_code_btn"):
         # Clear old result first so upload/photo failure does not reuse a previous search.
@@ -1833,7 +1931,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v30")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v31")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
@@ -1841,6 +1939,10 @@ with st.sidebar:
         st.caption(f"OCR engine: {tesseract_path}")
     else:
         st.caption(lt["ocr_engine_missing"])
+    if get_openai_api_key():
+        st.caption("AI vision: enabled")
+    else:
+        st.caption("AI vision: not configured")
     st.header(t["settings"])
     shipment_type = st.selectbox(t["shipment_type"], lt["shipment_options"])
     origin = st.text_input(t["origin"], placeholder="Tunisia / France / China")
