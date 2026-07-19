@@ -1209,7 +1209,7 @@ CLASSIFY_TEXT = {
         "meaning": "Reference meaning",
         "why": "Why this result",
         "warning": "This is not a legal customs ruling. Validate with a customs broker/customs authority before declaration.",
-        "no_match": "No direct suggestion found in the built-in sample/reference. Upload a complete HS/SH CSV reference or choose the closest HS section manually.",
+        "no_match": "No direct suggestion found in the built-in sample/reference. The detected label may be too generic; type a more specific product name such as 'deodorant', 'shampoo', 'plastic bottle', or upload a complete HS/SH CSV reference.",
         "use_code": "Use this HS code in document review text",
     },
     "Français": {
@@ -1316,6 +1316,13 @@ def build_classification_tree(hs_reference: List[Dict[str, str]]) -> List[Dict[s
 # Broad fallback HS/SH suggestion catalog for common product words.
 # This is a practical demo/search layer; exact classification still requires official HS/national tariff data.
 BROAD_HS_KEYWORD_CATALOG = [
+
+    ("3304.99", "Beauty or make-up preparations and preparations for the care of the skin, other", "personal care cosmetic cosmetics skin care cream lotion beauty deodorant body care soin corps"),
+    ("3305.10", "Shampoos", "shampoo shampoos hair care hair product shampoing cheveux"),
+    ("3306.10", "Dentifrices", "toothpaste dentifrice dental care dentifrice"),
+    ("3307.20", "Personal deodorants and antiperspirants", "deodorant antiperspirant body spray personal care deodorants déodorant anti transpirant"),
+    ("3307.90", "Perfumery, cosmetic or toilet preparations, other", "toiletries personal care cosmetic body spray hygiene toilet preparations"),
+
 
     ("8413.30", "Fuel, lubricating or cooling medium pumps for internal combustion piston engines", "electronic pump electric pump pump pumps pompe pompes مضخة مضخات fuel cooling lubricating automotive"),
     ("8413.50", "Other reciprocating positive displacement pumps", "pump pumps pompe pompes مضخة reciprocating displacement industrial pump"),
@@ -1461,6 +1468,16 @@ def normalize_product_query_for_hs(text_value: str) -> str:
         "velo": "bicycle",
         "vélo": "bicycle",
         "stylo": "pen",
+        "bottled and jarred packaged goods": "personal care cosmetic product",
+        "personal care": "personal care cosmetic deodorant",
+        "deodorant": "deodorant antiperspirant",
+        "anti perspirant": "deodorant antiperspirant",
+        "antiperspirant": "deodorant antiperspirant",
+        "body spray": "deodorant body spray",
+        "cosmetic": "cosmetic personal care",
+        "cosmetics": "cosmetic personal care",
+        "toiletry": "personal care toiletries",
+        "toiletries": "personal care toiletries",
     }
     for old, new in replacements.items():
         q = q.replace(old, new)
@@ -1543,6 +1560,10 @@ def suggest_hs_options(product_text: str, tree: List[Dict[str, str]], limit: int
             score += 60
         if any(w in product_lower for w in ["pump", "pumps", "liquid pump", "water pump", "fuel pump"]) and code.startswith("8413"):
             score += 75
+        if any(w in product_lower for w in ["deodorant", "antiperspirant", "body spray"]) and code.startswith("3307.20"):
+            score += 85
+        if any(w in product_lower for w in ["personal care", "cosmetic", "cosmetics", "toiletries", "skin care", "lotion", "cream"]) and (code.startswith("3304") or code.startswith("3307")):
+            score += 65
         if any(w in product_lower for w in ["electric motor", "motor", "moteur"]) and code.startswith("8501"):
             score += 55
         if any(w in product_lower for w in ["control panel", "electrical panel"]) and code.startswith("8537"):
@@ -1596,7 +1617,7 @@ def identify_object_with_google_vision_api_key(file_bytes: bytes) -> Tuple[str, 
     """Use Google Cloud Vision REST API with an API key for label/object detection."""
     api_key = get_google_vision_api_key()
     if not api_key:
-        return "", "Google Vision API key is not configured."
+        return "", "Image analysis API key is not configured."
 
     try:
         import base64
@@ -1623,11 +1644,11 @@ def identify_object_with_google_vision_api_key(file_bytes: bytes) -> Tuple[str, 
         if response.status_code >= 400:
             err = data.get("error", {})
             msg = err.get("message", str(data))
-            return "", f"Google Vision API-key request failed: {msg}"
+            return "", f"Image analysis request failed: {msg}"
 
         result = (data.get("responses") or [{}])[0]
         if "error" in result:
-            return "", f"Google Vision returned an error: {result['error'].get('message', result['error'])}"
+            return "", f"Image analysis returned an error: {result['error'].get('message', result['error'])}"
 
         labels = []
         for item in result.get("localizedObjectAnnotations", []) or []:
@@ -1642,11 +1663,11 @@ def identify_object_with_google_vision_api_key(file_bytes: bytes) -> Tuple[str, 
                 labels.append((name, score, "label"))
 
         if not labels:
-            return "", "Google Cloud Vision returned no labels/object names."
+            return "", "Image analysis returned no clear product/object name."
 
         return google_vision_labels_to_candidate(labels)
     except Exception as exc:
-        return "", f"Google Vision API-key mode failed: {exc}"
+        return "", f"Image analysis failed: {exc}"
 
 
 def google_vision_labels_to_candidate(labels) -> Tuple[str, str]:
@@ -1694,8 +1715,8 @@ def google_vision_labels_to_candidate(labels) -> Tuple[str, str]:
     else:
         candidate = ranked[0][1]
 
-    label_summary = ", ".join([f"{name} ({kind}, {score:.2f})" for _, name, score, kind in ranked[:5]])
-    return candidate[:120], f"Google Cloud Vision product candidate: {candidate}. Labels: {label_summary}."
+    # Keep provider and raw-label details out of the user interface.
+    return candidate[:120], f"Image analysis detected product candidate: {candidate}."
 
 
 def get_google_credentials_info():
@@ -1734,7 +1755,7 @@ def identify_object_with_google_vision(file_bytes: bytes) -> Tuple[str, str]:
         from google.cloud import vision
         from google.oauth2 import service_account
     except Exception:
-        return "", "Google Cloud Vision needs google-cloud-vision, or configure GOOGLE_VISION_API_KEY for REST API-key mode."
+        return "", "Image analysis needs the required vision package or API key configuration."
 
     try:
         credentials_info = get_google_credentials_info()
@@ -1749,11 +1770,11 @@ def identify_object_with_google_vision(file_bytes: bytes) -> Tuple[str, str]:
         object_response = client.object_localization(image=image)
 
         if labels_response.error.message:
-            return "", f"Google Vision label detection error: {labels_response.error.message}"
+            return "", f"Image analysis error: {labels_response.error.message}"
 
         object_note = ""
         if object_response.error.message:
-            object_note = f" Google Vision object detection warning: {object_response.error.message}"
+            object_note = f" Image analysis warning: {object_response.error.message}"
 
         labels = []
         for item in object_response.localized_object_annotations:
@@ -1768,7 +1789,7 @@ def identify_object_with_google_vision(file_bytes: bytes) -> Tuple[str, str]:
             note += object_note
         return candidate, note
     except Exception as exc:
-        return "", f"Google Cloud Vision failed: {exc}"
+        return "", f"Image analysis failed: {exc}"
 
 
 def identify_object_with_vision_ai(file_bytes: bytes, mime_type: str = "image/jpeg") -> Tuple[str, str]:
@@ -1933,7 +1954,7 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
     product_text = st.text_area(ct["product_desc"], height=120, placeholder=ct["product_placeholder"], key="hs_product_text")
 
     st.markdown("**Object/HS detection from description, document, or photo**")
-    st.caption("Use typed description for normal HS search. Upload/photo first uses OCR text; if Google Cloud Vision or OPENAI_API_KEY is configured, AI vision can identify the product from a pure photo.")
+    st.caption("Use typed description for normal HS search. Upload/photo first uses OCR text; if image analysis is configured, the app can identify the product from a pure photo.")
     hs_detect_method = st.radio(
         "HS input source",
         ["Use description above", "Upload image/PDF/document", "Take a picture"],
@@ -1960,20 +1981,20 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
                     st.info(google_note)
                 if google_candidate:
                     detected_text_for_hs = google_candidate
-                    st.success(f"Google Vision product candidate: {google_candidate}")
+                    st.success(f"Detected product candidate: {google_candidate}")
                 else:
                     vision_candidate, vision_note = identify_object_with_vision_ai(hs_upload.getvalue(), hs_upload.type or "image/jpeg")
                     if vision_note:
                         st.info(vision_note)
                     if vision_candidate:
                         detected_text_for_hs = vision_candidate
-                        st.success(f"AI vision product candidate: {vision_candidate}")
+                        st.success(f"Detected product candidate: {vision_candidate}")
                     else:
                         st.warning("No readable text was extracted and no vision API could identify the product. Type the object name above.")
             else:
                 st.warning("No readable text was extracted. For scanned PDFs/images, use a clearer file or connect AI vision for image understanding.")
     elif hs_detect_method == "Take a picture":
-        st.info("For product photos, Google Cloud Vision will be used when GOOGLE_APPLICATION_CREDENTIALS_JSON is configured. Without a vision API, type the object name in the description field.")
+        st.info("For product photos, Image analysis will be used when configured. Without a vision API, type the object name in the description field.")
         hs_photo = st.camera_input("Take a picture of the product/document", key="hs_object_camera")
         if hs_photo is not None:
             photo_bytes = hs_photo.getvalue()
@@ -1988,14 +2009,14 @@ def render_hs_classifier(lang: str, hs_reference: List[Dict[str, str]]):
                     st.info(google_note)
                 if google_candidate:
                     detected_text_for_hs = google_candidate
-                    st.success(f"Google Vision product candidate: {google_candidate}")
+                    st.success(f"Detected product candidate: {google_candidate}")
                 else:
                     vision_candidate, vision_note = identify_object_with_vision_ai(photo_bytes, hs_photo.type or "image/jpeg")
                     if vision_note:
                         st.info(vision_note)
                     if vision_candidate:
                         detected_text_for_hs = vision_candidate
-                        st.success(f"AI vision product candidate: {vision_candidate}")
+                        st.success(f"Detected product candidate: {vision_candidate}")
                     else:
                         st.warning("Photo captured, but no readable text or clear product object was detected. Type the object name above.")
 
@@ -2142,7 +2163,7 @@ with st.sidebar:
     page = st.radio("Feature / Fonction / الوظيفة", [ct["page_doc"], ct["page_hs"]], horizontal=False)
     tesseract_path = get_tesseract_cmd()
     lt = LOCAL_TEXT[lang]
-    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v33")
+    st.caption(f"Analysis model: TradeMindAI Rules + HS/SH hierarchy v35")
     hs_reference_file = st.file_uploader(lt["hs_upload"], type=["csv"], help=lt["hs_help"])
     hs_reference = load_hs_reference(hs_reference_file)
     st.caption(f"{lt["hs_model"]}: {len(hs_reference)} rows loaded")
@@ -2151,15 +2172,15 @@ with st.sidebar:
     else:
         st.caption(lt["ocr_engine_missing"])
     if get_google_vision_api_key():
-        st.caption("Google Cloud Vision: enabled with API key")
+        st.caption("Image analysis: enabled")
     elif get_google_credentials_info():
-        st.caption("Google Cloud Vision: enabled with service account")
+        st.caption("Image analysis: enabled")
     else:
-        st.caption("Google Cloud Vision: not configured")
+        st.caption("Image analysis: not configured")
     if get_openai_api_key():
-        st.caption("OpenAI vision fallback: enabled")
+        st.caption("Advanced image fallback: enabled")
     else:
-        st.caption("OpenAI vision fallback: not configured")
+        st.caption("Advanced image fallback: not configured")
     st.header(t["settings"])
     shipment_type = st.selectbox(t["shipment_type"], lt["shipment_options"])
     origin = st.text_input(t["origin"], placeholder="Tunisia / France / China")
